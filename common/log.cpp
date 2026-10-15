@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <mutex>
 #include <sstream>
 #include <thread>
@@ -36,6 +37,17 @@ void common_log_set_jsonl(bool jsonl) {
 
 static int64_t t_us() {
     return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+// thread-safe std::localtime replacement (log worker thread runs concurrently with other localtime callers)
+static std::tm local_tm(time_t t) {
+    std::tm tm_buf {};
+#if defined(_WIN32)
+    localtime_s(&tm_buf, &t);
+#else
+    localtime_r(&t, &tm_buf);
+#endif
+    return tm_buf;
 }
 
 // colors
@@ -124,13 +136,14 @@ struct common_log_entry {
 
         if (level != GGML_LOG_LEVEL_NONE && level != GGML_LOG_LEVEL_CONT && prefix) {
             if (timestamp) {
-                // [M.s.ms.us]
-                fprintf(fcur, "%s%d.%02d.%03d.%03d%s ",
+                const std::tm tm_buf = local_tm((time_t) (timestamp / 1000000));
+                char time_str[32];
+                std::strftime(time_str, sizeof(time_str), "%Y-%m-%dT%H:%M:%S", &tm_buf);
+                // [YYYY-MM-DDTHH:MM:SS.us]
+                fprintf(fcur, "%s[%s.%06d]%s ",
                         g_col[COMMON_LOG_COL_BLUE],
-                        (int) (timestamp / 1000000 / 60),
-                        (int) (timestamp / 1000000 % 60),
-                        (int) (timestamp / 1000 % 1000),
-                        (int) (timestamp % 1000),
+                        time_str,
+                        (int) (timestamp % 1000000),
                         g_col[COMMON_LOG_COL_DEFAULT]);
             }
 
@@ -289,7 +302,7 @@ public:
         entry.is_json   = false;
         entry.timestamp = 0;
         if (timestamps) {
-            entry.timestamp = t_us() - t_start;
+            entry.timestamp = t_us();
         }
 
         tail = (tail + 1) % queue.size();
